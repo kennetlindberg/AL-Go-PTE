@@ -7,10 +7,14 @@ on:
         description: Template Repository URL (current is {TEMPLATEURL})
         required: false
         default: ''
+      downloadLatest:
+        description: Download latest from template repository
+        type: boolean
+        default: true
       directCommit:
-        description: Direct COMMIT (Y/N)
-        required: false
-        default: 'N'
+        description: Direct Commit?
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -25,8 +29,14 @@ env:
 
 jobs:
   UpdateALGoSystemFiles:
+    needs: [ ]
     runs-on: [ windows-latest ]
     steps:
+      - name: Dump Workflow Information
+        uses: kennetlindberg/AL-Go-Actions/DumpWorkflowInfo@main
+        with:
+          shell: powershell
+
       - name: Checkout
         uses: actions/checkout@v3
 
@@ -41,14 +51,13 @@ jobs:
         uses: kennetlindberg/AL-Go-Actions/ReadSettings@main
         with:
           shell: powershell
-          parentTelemetryScopeJson: ${{ steps.init.outputs.telemetryScopeJson }}
           get: templateUrl
 
       - name: Read secrets
+        id: ReadSecrets
         uses: kennetlindberg/AL-Go-Actions/ReadSecrets@main
         with:
           shell: powershell
-          parentTelemetryScopeJson: ${{ steps.init.outputs.telemetryScopeJson }}
           gitHubSecrets: ${{ toJson(secrets) }}
           getSecrets: 'ghTokenWorkflow'
 
@@ -63,27 +72,31 @@ jobs:
             Add-Content -Encoding UTF8 -Path $env:GITHUB_ENV -Value "templateUrl=$templateUrl"
           }
 
-      - name: Calculate DirectCommit
+      - name: Calculate Input
         env:
-          directCommit: ${{ github.event.inputs.directCommit }}
+          directCommit: '${{ github.event.inputs.directCommit }}'
+          downloadLatest: ${{ github.event.inputs.downloadLatest }}
           eventName: ${{ github.event_name }}
         run: |
           $errorActionPreference = "Stop"; $ProgressPreference = "SilentlyContinue"; Set-StrictMode -Version 2.0
           $directCommit = $ENV:directCommit
+          $downloadLatest = $ENV:downloadLatest
           Write-Host $ENV:eventName
           if ($ENV:eventName -eq 'schedule') {
-            Write-Host "Running Update AL-Go System Files on a schedule. Setting DirectCommit = Y"
-            $directCommit = 'Y'
+            Write-Host "Running Update AL-Go System Files on a schedule. Setting DirectCommit and DownloadLatest to true"
+            $directCommit = 'true'
+            $downloadLatest = 'true'
           }
-          Add-Content -Encoding UTF8 -Path $env:GITHUB_ENV -Value "DirectCommit=$directCommit"
+          Add-Content -Encoding UTF8 -Path $env:GITHUB_ENV -Value "directCommit=$directCommit"
+          Add-Content -Encoding UTF8 -Path $env:GITHUB_ENV -Value "downloadLatest=$downloadLatest"
 
       - name: Update AL-Go system files
         uses: kennetlindberg/AL-Go-Actions/CheckForUpdates@main
         with:
           shell: powershell
-          parentTelemetryScopeJson: ${{ steps.init.outputs.telemetryScopeJson }}
-          token: ${{ fromJson(env.Secrets).ghTokenWorkflow }}
-          Update: Y
+          token: ${{ fromJson(steps.ReadSecrets.outputs.Secrets).ghTokenWorkflow }}
+          downloadLatest: ${{ env.downloadLatest }}
+          update: 'Y'
           templateUrl: ${{ env.templateUrl }}
           directCommit: ${{ env.directCommit }}
 

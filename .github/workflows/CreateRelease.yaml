@@ -16,28 +16,29 @@ on:
         required: true
         default: ''
       prerelease:
-        description: Prerelease (Y/N)
-        required: false
-        default: 'N'
+        description: Prerelease?
+        type: boolean
+        default: false
       draft:
-        description: Draft (Y/N)
-        required: false
-        default: 'N'
+        description: Draft?
+        type: boolean
+        default: false
       createReleaseBranch:
-        description: Create Release Branch (Y/N)
-        required: false
-        default: 'N'
+        description: Create Release Branch?
+        type: boolean
+        default: false
       updateVersionNumber:
         description: New Version Number in main branch. Use Major.Minor for absolute change, use +Major.Minor for incremental change.
         required: false
         default: ''
       directCommit:
-        description: Direct COMMIT (Y/N)
-        required: false
-        default: 'N'
-      useGhTokenWorkflow:
-        description: Use GhTokenWorkflow for Pull Request/COMMIT
+        description: Direct Commit?
         type: boolean
+        default: false
+      useGhTokenWorkflow:
+        description: Use GhTokenWorkflow for PR/Commit?
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -56,6 +57,7 @@ env:
 
 jobs:
   CreateRelease:
+    needs: [ ]
     runs-on: [ windows-latest ]
     outputs:
       telemetryScopeJson: ${{ steps.init.outputs.telemetryScopeJson }}
@@ -64,6 +66,11 @@ jobs:
       commitish: ${{ steps.analyzeartifacts.outputs.commitish }}
       releaseBranch: ${{ steps.createreleasenotes.outputs.releaseBranch }}
     steps:
+      - name: Dump Workflow Information
+        uses: kennetlindberg/AL-Go-Actions/DumpWorkflowInfo@main
+        with:
+          shell: powershell
+
       - name: Checkout
         uses: actions/checkout@v3
 
@@ -79,7 +86,6 @@ jobs:
         uses: kennetlindberg/AL-Go-Actions/ReadSettings@main
         with:
           shell: powershell
-          parentTelemetryScopeJson: ${{ steps.init.outputs.telemetryScopeJson }}
           get: templateUrl,repoName
 
       - name: Determine Projects
@@ -92,8 +98,8 @@ jobs:
         uses: kennetlindberg/AL-Go-Actions/CheckForUpdates@main
         with:
           shell: powershell
-          parentTelemetryScopeJson: ${{ steps.init.outputs.telemetryScopeJson }}
           templateUrl: ${{ env.templateUrl }}
+          downloadLatest: true
 
       - name: Analyze Artifacts
         id: analyzeartifacts
@@ -106,7 +112,7 @@ jobs:
           $sha = ''
           $allArtifacts = @()
           $page = 1
-          $headers = @{ 
+          $headers = @{
             "Authorization" = "token ${{ github.token }}"
             "X-GitHub-Api-Version" = "2022-11-28"
             "Accept" = "application/vnd.github+json"
@@ -196,8 +202,8 @@ jobs:
               tag_name: '${{ github.event.inputs.tag }}',
               name: '${{ github.event.inputs.name }}',
               body: bodyMD.replaceAll('\\n','\n').replaceAll('%0A','\n').replaceAll('%0D','\n').replaceAll('%25','%'),
-              draft: ${{ github.event.inputs.draft=='Y' }},
-              prerelease: ${{ github.event.inputs.prerelease=='Y' }},
+              draft: ${{ github.event.inputs.draft=='true' }},
+              prerelease: ${{ github.event.inputs.prerelease=='true' }},
               make_latest: 'legacy',
               target_commitish: '${{ steps.analyzeartifacts.outputs.commitish }}'
             });
@@ -207,8 +213,8 @@ jobs:
             core.setOutput('releaseId', releaseId);
 
   UploadArtifacts:
-    runs-on: [ windows-latest ]
     needs: [ CreateRelease ]
+    runs-on: [ windows-latest ]
     strategy:
       matrix: ${{ fromJson(needs.CreateRelease.outputs.artifacts) }}
       fail-fast: true
@@ -220,13 +226,12 @@ jobs:
         uses: kennetlindberg/AL-Go-Actions/ReadSettings@main
         with:
           shell: powershell
-          parentTelemetryScopeJson: ${{ needs.CreateRelease.outputs.telemetryScopeJson }}
 
       - name: Read secrets
+        id: ReadSecrets
         uses: kennetlindberg/AL-Go-Actions/ReadSecrets@main
         with:
           shell: powershell
-          parentTelemetryScopeJson: ${{ needs.CreateRelease.outputs.telemetryScopeJson }}
           gitHubSecrets: ${{ toJson(secrets) }}
           getSecrets: 'nuGetContext,storageContext'
 
@@ -234,7 +239,7 @@ jobs:
         run: |
           $errorActionPreference = "Stop"; $ProgressPreference = "SilentlyContinue"; Set-StrictMode -Version 2.0
           Write-Host "Downloading artifact ${{ matrix.name}}"
-          $headers = @{ 
+          $headers = @{
             "Authorization" = "token ${{ github.token }}"
             "X-GitHub-Api-Version" = "2022-11-28"
             "Accept" = "application/vnd.github+json"
@@ -260,22 +265,11 @@ jobs:
               data: fs.readFileSync(assetPath)
             });
 
-      - name: nuGetContext
-        id: nuGetContext
-        run: |
-          $errorActionPreference = "Stop"; $ProgressPreference = "SilentlyContinue"; Set-StrictMode -Version 2.0
-          $nuGetContext = ''
-          $secrets = $env:Secrets | ConvertFrom-Json
-          if ('${{ matrix.atype }}' -eq 'Apps' -and $secrets.nuGetContext) {
-            $nuGetContext = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($secrets.nuGetContext))
-          }
-          Add-Content -Encoding UTF8 -Path $env:GITHUB_OUTPUT -Value "nuGetContext=$nuGetContext"
-
       - name: Deliver to NuGet
         uses: kennetlindberg/AL-Go-Actions/Deliver@main
-        if: ${{ steps.nuGetContext.outputs.nuGetContext }}
+        if: ${{ fromJson(steps.ReadSecrets.outputs.Secrets).nuGetContext != '' }}
         env:
-          deliveryContext: ${{ steps.nuGetContext.outputs.nuGetContext }}
+          Secrets: '${{ steps.ReadSecrets.outputs.Secrets }}'
         with:
           shell: powershell
           type: 'Release'
@@ -284,22 +278,11 @@ jobs:
           artifacts: ${{ github.event.inputs.appVersion }}
           atypes: 'Apps,TestApps'
 
-      - name: storageContext
-        id: storageContext
-        run: |
-          $errorActionPreference = "Stop"; $ProgressPreference = "SilentlyContinue"; Set-StrictMode -Version 2.0
-          $storageContext = ''
-          $secrets = $env:Secrets | ConvertFrom-Json
-          if ('${{ matrix.atype }}' -eq 'Apps' -and $secrets.storageContext) {
-            $storageContext = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($secrets.storageContext))
-          }
-          Add-Content -Encoding UTF8 -Path $env:GITHUB_OUTPUT -Value "storageContext=$storageContext"
-
       - name: Deliver to Storage
         uses: kennetlindberg/AL-Go-Actions/Deliver@main
-        if: ${{ steps.storageContext.outputs.storageContext }}
+        if: ${{ fromJson(steps.ReadSecrets.outputs.Secrets).storageContext != '' }}
         env:
-          deliveryContext: ${{ steps.storageContext.outputs.storageContext }}
+          Secrets: '${{ steps.ReadSecrets.outputs.Secrets }}'
         with:
           shell: powershell
           type: 'Release'
@@ -309,9 +292,9 @@ jobs:
           atypes: 'Apps,TestApps,Dependencies'
 
   CreateReleaseBranch:
-    if: ${{ github.event.inputs.createReleaseBranch=='Y' }}
-    runs-on: [ windows-latest ]
     needs: [ CreateRelease, UploadArtifacts ]
+    if: ${{ github.event.inputs.createReleaseBranch=='true' }}
+    runs-on: [ windows-latest ]
     steps:
       - name: Checkout
         uses: actions/checkout@v3
@@ -328,56 +311,37 @@ jobs:
           git push origin ${{ needs.CreateRelease.outputs.releaseBranch }}
 
   UpdateVersionNumber:
+    needs: [ CreateRelease, UploadArtifacts ]
     if: ${{ github.event.inputs.updateVersionNumber!='' }}
     runs-on: [ windows-latest ]
-    needs: [ CreateRelease, UploadArtifacts ]
     steps:
       - name: Read settings
         uses: kennetlindberg/AL-Go-Actions/ReadSettings@main
-        if: github.event.inputs.useGhTokenWorkflow == 'true'
         with:
           shell: powershell
-          parentTelemetryScopeJson: ${{ steps.init.outputs.telemetryScopeJson }}
 
       - name: Read secrets
+        id: ReadSecrets
         uses: kennetlindberg/AL-Go-Actions/ReadSecrets@main
-        if: github.event.inputs.useGhTokenWorkflow == 'true'
         with:
           shell: powershell
-          parentTelemetryScopeJson: ${{ steps.init.outputs.telemetryScopeJson }}
           gitHubSecrets: ${{ toJson(secrets) }}
-          getSecrets: 'ghTokenWorkflow'
-
-      - name: CalculateToken
-        id: CalculateToken
-        env:
-          useGhTokenWorkflow: ${{ github.event.inputs.useGhTokenWorkflow }}
-        run: |
-          $ghToken = '${{ secrets.GITHUB_TOKEN }}'
-          if ($env:useGhTokenWorkflow -eq 'true') {
-            $secrets = $env:Secrets | ConvertFrom-Json
-            if ($secrets.GHTOKENWORKFLOW) {
-              $ghToken = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($secrets.GHTOKENWORKFLOW))
-            }
-            else {
-              Write-Host "::Warning::GHTOKENWORKFLOW secret not found. Using GITHUB_TOKEN."
-            }
-          }
-          Add-Content -Encoding UTF8 -Path $env:GITHUB_OUTPUT -Value "ghToken=$ghToken"
+          getSecrets: 'TokenForPush'
+          useGhTokenWorkflowForPush: '${{ github.event.inputs.useGhTokenWorkflow }}'
 
       - name: Update Version Number
         uses: kennetlindberg/AL-Go-Actions/IncrementVersionNumber@main
         with:
           shell: powershell
-          token: ${{ steps.CalculateToken.outputs.ghToken }}
+          token: ${{ steps.ReadSecrets.outputs.TokenForPush }}
           parentTelemetryScopeJson: ${{ needs.CreateRelease.outputs.telemetryScopeJson }}
           versionNumber: ${{ github.event.inputs.updateVersionNumber }}
           directCommit: ${{ github.event.inputs.directCommit }}
 
   PostProcess:
+    needs: [ CreateRelease, UploadArtifacts, CreateReleaseBranch, UpdateVersionNumber ]
     if: always()
     runs-on: [ windows-latest ]
-    needs: [ CreateRelease, UploadArtifacts, CreateReleaseBranch, UpdateVersionNumber ]
     steps:
       - name: Checkout
         uses: actions/checkout@v3

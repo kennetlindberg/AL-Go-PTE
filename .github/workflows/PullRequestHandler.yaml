@@ -2,8 +2,6 @@ name: 'Pull Request Build'
 
 on:
   pull_request_target:
-    paths-ignore:
-      - '**.md'
     branches: [ 'main' ]
 
 concurrency:
@@ -42,8 +40,14 @@ jobs:
       projects: ${{ steps.determineProjectsToBuild.outputs.ProjectsJson }}
       projectDependenciesJson: ${{ steps.determineProjectsToBuild.outputs.ProjectDependenciesJson }}
       buildOrderJson: ${{ steps.determineProjectsToBuild.outputs.BuildOrderJson }}
+      baselineWorkflowRunId: ${{ steps.determineProjectsToBuild.outputs.BaselineWorkflowRunId }}
       workflowDepth: ${{ steps.DetermineWorkflowDepth.outputs.WorkflowDepth }}
     steps:
+      - name: Dump Workflow Information
+        uses: kennetlindberg/AL-Go-Actions/DumpWorkflowInfo@main
+        with:
+          shell: powershell
+
       - name: Checkout
         uses: actions/checkout@v3
         with:
@@ -62,14 +66,12 @@ jobs:
         uses: kennetlindberg/AL-Go-Actions/ReadSettings@main
         with:
           shell: powershell
-          parentTelemetryScopeJson: ${{ steps.init.outputs.telemetryScopeJson }}
-          getEnvironments: '*'
-      
+
       - name: Determine Workflow Depth
         id: DetermineWorkflowDepth
         run: |
           Add-Content -Encoding UTF8 -Path $env:GITHUB_OUTPUT -Value "WorkflowDepth=$($env:workflowDepth)"
-          
+
       - name: Determine Projects To Build
         id: determineProjectsToBuild
         uses: kennetlindberg/AL-Go-Actions/DetermineProjectsToBuild@main
@@ -84,7 +86,7 @@ jobs:
       matrix:
         include: ${{ fromJson(needs.Initialization.outputs.buildOrderJson)[0].buildDimensions }}
       fail-fast: false
-    name: Build ${{ matrix.project }} - ${{ matrix.buildMode }}
+    name: Build ${{ matrix.projectName }} (${{ matrix.buildMode }})
     uses: ./.github/workflows/_BuildALGoProject.yaml
     secrets: inherit
     with:
@@ -93,15 +95,18 @@ jobs:
       checkoutRef: refs/pull/${{ github.event.number }}/merge
       parentTelemetryScopeJson: ${{ needs.Initialization.outputs.telemetryScopeJson }}
       project: ${{ matrix.project }}
+      projectName: ${{ matrix.projectName }}
       buildMode: ${{ matrix.buildMode }}
       projectDependenciesJson: ${{ needs.Initialization.outputs.projectDependenciesJson }}
-      secrets: 'licenseFileUrl,insiderSasToken,keyVaultCertificateUrl,keyVaultCertificatePassword,keyVaultClientId,gitHubPackagesContext,applicationInsightsConnectionString'
+      baselineWorkflowRunId: ${{ needs.Initialization.outputs.baselineWorkflowRunId }}
+      secrets: 'licenseFileUrl,keyVaultCertificateUrl,*keyVaultCertificatePassword,keyVaultClientId,gitHubPackagesContext,applicationInsightsConnectionString'
       publishThisBuildArtifacts: ${{ needs.Initialization.outputs.workflowDepth > 1 }}
+      artifactsNameSuffix: 'PR${{ github.event.number }}'
 
   StatusCheck:
-    runs-on: [ windows-latest ]
     needs: [ Initialization, Build ]
     if: (!cancelled())
+    runs-on: [ windows-latest ]
     name: Pull Request Status Check
     steps:
       - name: Pull Request Status Check
